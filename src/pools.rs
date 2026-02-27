@@ -15,23 +15,30 @@ use std::{
     fs::OpenOptions,
     path::Path,
     str::FromStr,
-    sync::Arc
+    sync::Arc,
+    io::Write
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use anyhow::{Result, anyhow};
 use csv::StringRecord;
 use log::info;
+use serde::{Serialize, Deserialize};
 
 use crate::interfaces::*;
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Version {
     V2,
     V3
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolsToml {
+    pool: Vec<Pool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pool {
     pub id: i64,
     pub address: Address,
@@ -44,45 +51,7 @@ pub struct Pool {
     pub tickspacing: i32,
 }
 
-impl From<StringRecord> for Pool {
-    fn from(record: StringRecord) -> Self {
-        let version = match record.get(2).unwrap().parse().unwrap() {
-            2 => Version::V2,
-            _ => Version::V3
-        };
-        Self {
-            id: record.get(0).unwrap().parse().unwrap(),
-            address: Address::from_str(record.get(1).unwrap()).unwrap(),
-            version,
-            token0: Address::from_str(record.get(3).unwrap()).unwrap(),
-            token1: Address::from_str(record.get(4).unwrap()).unwrap(),
-            fee: record.get(5).unwrap().parse().unwrap(),
-            block_number: record.get(6).unwrap().parse().unwrap(),
-            timestamp: record.get(7).unwrap().parse().unwrap(),
-            tickspacing: record.get(8).unwrap().parse().unwrap(),
-        }
-    }
-}
-
-
 impl Pool {
-    pub fn cache_row(&self) -> (i64, String, i32, String, String, u32, u64, u64, i32) {
-        (
-            self.id,
-            format!("{:?}", self.address),
-            match self.version {
-                Version::V2 => 2,
-                _ => 3,
-            },
-            format!("{:?}", self.token0),
-            format!("{:?}", self.token1),
-            self.fee,
-            self.block_number,
-            self.timestamp,
-            self.tickspacing,
-        )
-    }
-
     pub fn has_token(&self, token: Address) -> bool {
         self.token0 == token || self.token1 == token
     }
@@ -97,42 +66,13 @@ pub async fn load_pools(
 
     info!("Loading Pools...");
 
-    let mut pools = BTreeMap::new();
-    let mut blocks = vec![];
+    let (mut pools, mut blocks) = match load_pools_from_file(path) {
+        Ok(p) => p,
+        Err(e) => return Err(e),
+    };
 
-    let file = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .create(true)
-        .open(path)
-        .unwrap();
-
-    let mut writer = csv::Writer::from_writer(file);
-
-    if path.exists() {
-        let mut reader = csv::Reader::from_path(path)?;
-        for row in reader.records() {
-            let row = row.unwrap();
-            let pool = Pool::from(row);
-            blocks.push(pool.block_number);
-            pools.insert(pool.address, pool);
-        }
-    } else {
-        writer.write_record(&[
-            "id",
-            "address",
-            "version",
-            "token0",
-            "token1",
-            "fee",
-            "block_number",
-            "timestamp",
-            "tickspacing",
-        ])?;
-    }
-
-    let last_id = match pools.len() > 0{
-        true => pools.last_key_value().unwrap().1.id,
+    let last_id = match pools.len() > 0 {
+        true => pools.values().map(|p| p.id).max().unwrap_or(-1),
         false => -1
     };
 
@@ -146,9 +86,7 @@ pub async fn load_pools(
         false => from_block
     };
 
-
     let to_block = provider.get_block_number().await.unwrap();
-//    let from_block = to_block;
     let mut processed_blocks = 0u64;
     let mut block_range: Vec<(u64, u64)> = vec![];
 
@@ -168,14 +106,13 @@ pub async fn load_pools(
 
     let sigs = vec![
         PoolCreated::SIGNATURE_HASH, // v3
-        PairCreated::SIGNATURE_HASH, // v3
+        PairCreated::SIGNATURE_HASH, // v2
     ];
 
     let factories = vec![
         address!("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
         address!("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"),
     ];
-
 
     let pb = ProgressBar::new(to_block-from_block);
     pb.set_style(
@@ -207,20 +144,21 @@ pub async fn load_pools(
         pb.set_message(format!("{:?} block range {:?}-{:?}", pools.len(), range.0, range.1));
     }
 
-    let mut id = 0;
+    let mut id = last_id;
     let mut added = 0;
 
     for (_, pool) in pools.iter_mut() {
         if pool.id == -1 {
             id += 1;
             pool.id = id;
-        }
-        if (pool.id as i64) > last_id {
-            writer.serialize(pool.cache_row())?;
             added += 1;
         }
     }
-    writer.flush()?;
+
+    // Write all pools to TOML
+    write_pools_to_toml(&pools, path)?;
+
+    info!("Added {} new pools", added);
 
     Ok((pools, last_id))
 }
@@ -337,19 +275,39 @@ async fn get_pool_data(
 
 pub fn load_pools_from_file(
     path: &Path,
-) -> Result<BTreeMap<Address, Pool>> {
+) -> Result<(BTreeMap<Address, Pool>, Vec<u64>)> {
     let mut pools = BTreeMap::new();
+    let mut blocks = vec![];
 
     if path.exists() {
-        let mut reader = csv::Reader::from_path(path)?;
-        for row in reader.records() {
-            let row = row.unwrap();
-            let pool = Pool::from(row);
+        let toml_content = std::fs::read_to_string(path)?;
+        let pools_toml: PoolsToml = toml::from_str(&toml_content)?;
+
+        for pool in pools_toml.pool {
+            blocks.push(pool.block_number);
             pools.insert(pool.address, pool);
         }
-    } else {
-        return Err(anyhow!("File path does not exist"));
     }
 
-    Ok(pools)
+    Ok((pools, blocks))
+}
+
+pub fn write_pools_to_toml(
+    pools: &BTreeMap<Address, Pool>,
+    path: &Path,
+) -> Result<()> {
+    let pools_vec: Vec<Pool> = pools.values().cloned().collect();
+    let pools_toml = PoolsToml { pool: pools_vec };
+
+    let toml_string = toml::to_string_pretty(&pools_toml)?;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    file.write_all(toml_string.as_bytes())?;
+
+    Ok(())
 }

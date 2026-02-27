@@ -158,11 +158,9 @@ pub async fn load_tokens(
         }
     }
 
-    let mut added = 0;
     for token in tokens.values().collect::<Vec<&Token>>().iter() {
         if token.id >= new_token_id {
             writer.serialize(token.cache_row())?;
-            added += 1
         }
     }
     writer.flush()?;
