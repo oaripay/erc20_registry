@@ -1,24 +1,26 @@
 use alloy::{
-    primitives::{address, Address, FixedBytes},
+    primitives::{Address, FixedBytes, address},
+    providers::Provider,
     rpc::types::{BlockId, Filter},
     sol_types::SolEvent,
-    providers::Provider,
 };
-use std::{
-    collections::{BTreeMap, HashMap}, fmt::Octal, fs::OpenOptions, io::Write, path::Path
-};
-use indicatif::{ProgressBar, ProgressStyle};
 use anyhow::{Result, anyhow};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::OpenOptions,
+    io::Write,
+    path::Path,
+};
 
 use crate::interfaces::*;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Version {
     V2,
-    V3
+    V3,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +53,6 @@ pub async fn load_pools(
     from_block: u64,
     chunk: u64,
 ) -> Result<(BTreeMap<Address, Pool>, i64)> {
-
     info!("Loading Pools...");
 
     let (mut pools, blocks) = match load_pools_from_file(path) {
@@ -61,17 +62,17 @@ pub async fn load_pools(
 
     let last_id = match pools.len() > 0 {
         true => pools.values().map(|p| p.id).max().unwrap_or(-1),
-        false => -1
+        false => -1,
     };
 
     let from_block = match last_id != -1 {
-        true => {
-            match blocks.iter().max() {
-                Some(b) => *b,
-                _ => { return Err(anyhow!("load_pools could not find last processed block")); }
+        true => match blocks.iter().max() {
+            Some(b) => *b,
+            _ => {
+                return Err(anyhow!("load_pools could not find last processed block"));
             }
-        }
-        false => from_block
+        },
+        false => from_block,
     };
 
     let to_block = provider.get_block_number().await.unwrap();
@@ -102,7 +103,7 @@ pub async fn load_pools(
         address!("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"),
     ];
 
-    let pb = ProgressBar::new(to_block-from_block);
+    let pb = ProgressBar::new(to_block - from_block);
     pb.set_style(
         ProgressStyle::with_template(
             "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} current pools: {msg}",
@@ -119,9 +120,13 @@ pub async fn load_pools(
             range.1,
             sigs.clone(),
             factories.clone(),
-        ).await {
+        )
+        .await
+        {
             Ok(r) => {
-                for p in r { pools.insert(p.address, p); }
+                for p in r {
+                    pools.insert(p.address, p);
+                }
             }
             Err(e) => {
                 info!("get_pool_data call error {:?}", e);
@@ -129,7 +134,12 @@ pub async fn load_pools(
             }
         };
         pb.inc(chunk);
-        pb.set_message(format!("{:?} block range {:?}-{:?}", pools.len(), range.0, range.1));
+        pb.set_message(format!(
+            "{:?} block range {:?}-{:?}",
+            pools.len(),
+            range.0,
+            range.1
+        ));
     }
 
     let mut id = last_id;
@@ -154,7 +164,6 @@ pub async fn load_pools(
     Ok((pools, last_id))
 }
 
-
 async fn get_pool_data(
     provider: impl Provider,
     from_block: u64,
@@ -176,15 +185,13 @@ async fn get_pool_data(
         Err(e) => {
             info!("Error getting logs {:?}", e);
             return Ok(pools);
-        },
+        }
     };
 
     for log in logs {
         let (version, address, token0, token1, fee, tickspacing) = match log.topic0().unwrap() {
             &PairCreated::SIGNATURE_HASH => {
-                let event = match PairCreated::decode_log_data(
-                    log.data()
-                ) {
+                let event = match PairCreated::decode_log_data(log.data()) {
                     Ok(r) => r,
                     Err(e) => {
                         info!("UniswapV2Factory decoding error {:?}", e);
@@ -193,20 +200,32 @@ async fn get_pool_data(
                 };
                 let tickspacing: i32 = 0;
                 let fee: u32 = 3000;
-                (Version::V2, event.pair, event.token0, event.token1, fee, tickspacing)
-            },
+                (
+                    Version::V2,
+                    event.pair,
+                    event.token0,
+                    event.token1,
+                    fee,
+                    tickspacing,
+                )
+            }
             &PoolCreated::SIGNATURE_HASH => {
-                let event = match PoolCreated::decode_log_data(
-                    log.data()
-                ) {
+                let event = match PoolCreated::decode_log_data(log.data()) {
                     Ok(r) => r,
                     Err(e) => {
                         info!("UniswapV3Factory decoding error {:?}", e);
                         continue;
                     }
                 };
-                (Version::V3, event.pool, event.token0, event.token1, event.fee.to::<u32>(), event.tickSpacing.as_i32())
-            },
+                (
+                    Version::V3,
+                    event.pool,
+                    event.token0,
+                    event.token1,
+                    event.fee.to::<u32>(),
+                    event.tickSpacing.as_i32(),
+                )
+            }
             t => {
                 info!("Counld not match topic {:?}", t);
                 continue;
@@ -222,16 +241,12 @@ async fn get_pool_data(
         };
 
         let timestamp = if !timestamp_map.contains_key(&block_number) {
-            let block = match provider.get_block(
-                BlockId::from(block_number)
-            ).await {
-                Ok(r) => {
-                    match r {
-                        Some(v) => v,
-                        _ => {
-                            info!("No block returned");
-                            continue;
-                        }
+            let block = match provider.get_block(BlockId::from(block_number)).await {
+                Ok(r) => match r {
+                    Some(v) => v,
+                    _ => {
+                        info!("No block returned");
+                        continue;
                     }
                 },
                 Err(e) => {
@@ -242,7 +257,7 @@ async fn get_pool_data(
             let timestamp = block.header.timestamp;
             timestamp
         } else {
-            let timestamp  = *timestamp_map.get(&block_number).unwrap();
+            let timestamp = *timestamp_map.get(&block_number).unwrap();
             timestamp
         };
 
@@ -255,7 +270,7 @@ async fn get_pool_data(
             fee,
             block_number,
             timestamp,
-            tickspacing
+            tickspacing,
         };
 
         pools.push(pool_data)
@@ -263,9 +278,7 @@ async fn get_pool_data(
     Ok(pools)
 }
 
-pub fn load_pools_from_file(
-    path: &Path,
-) -> Result<(BTreeMap<Address, Pool>, Vec<u64>)> {
+pub fn load_pools_from_file(path: &Path) -> Result<(BTreeMap<Address, Pool>, Vec<u64>)> {
     let mut pools = BTreeMap::new();
     let mut blocks = vec![];
 
@@ -294,10 +307,7 @@ pub fn load_pools_from_file(
     Ok((pools, blocks))
 }
 
-pub fn write_pools_to_toml(
-    pools: &BTreeMap<Address, Pool>,
-    path: &Path,
-) -> Result<()> {
+pub fn write_pools_to_toml(pools: &BTreeMap<Address, Pool>, path: &Path) -> Result<()> {
     let pools_vec: Vec<Pool> = pools.values().cloned().collect();
     let pools_toml = PoolsToml { pool: pools_vec };
 
@@ -313,13 +323,14 @@ pub fn write_pools_to_toml(
         .write(true)
         .create(true)
         .truncate(true)
-        .open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                info!("Error opening file for writing pools: {:?}", e);
-                return Ok(());
-            }
-        };
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            info!("Error opening file for writing pools: {:?}", e);
+            return Ok(());
+        }
+    };
 
     match file.write_all(toml_string.as_bytes()) {
         Ok(_) => (),
