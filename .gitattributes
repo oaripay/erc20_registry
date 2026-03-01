@@ -1,0 +1,2 @@
+data/pools.toml filter=lfs diff=lfs merge=lfs -text
+data/tokens.toml filter=lfs diff=lfs merge=lfs -text
