@@ -41,21 +41,31 @@ async fn main() -> Result<()> {
     let block_number = BlockId::from(provider.get_block_number().await.unwrap());
     let from_block_number = 10000835;
     let chunks = 50000;
-    let (pools, pool_id) = load_pools(
+    let (pools, pool_id) = match load_pools(
         provider.clone(),
         Path::new("./data/pools.toml"),
         from_block_number,
         chunks,
-    ).await.unwrap();
+    ).await {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(anyhow!("Failed to load pools: {:?}", e));
+        }
+    };
 
     let parallel_tokens = 1;
-    let tokens = load_tokens(
+    let tokens = match load_tokens(
         provider.clone(),
         Path::new("./data/tokens.toml"),
         &pools,
         parallel_tokens,
-        pool_id,
-    ).await.unwrap();
+        pool_id-100000,
+    ).await {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            return Err(anyhow!("Failed to load tokens: {:?}", e));
+        }
+    };
 
     Ok(())
 }

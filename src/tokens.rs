@@ -39,7 +39,13 @@ pub async fn load_tokens(
 
     info!("Loading tokens...");
 
-    let mut tokens = load_tokens_from_file(path)?;
+    let mut tokens = match load_tokens_from_file(path) {
+        Ok(t) => t,
+        Err(e) => {
+            info!("Failed to load tokens from file: {:?}. Starting with empty token list.", e);
+            BTreeMap::new()
+        }
+    };
 
 
     let pb = ProgressBar::new(pools.len() as u64);
@@ -51,13 +57,12 @@ pub async fn load_tokens(
         .progress_chars("##-"),
     );
 
-
-    let mut count = 0;
+    let mut count = 1;
     let mut requests = Vec::new();
 
     for (_, pool) in pools.into_iter() {
-        let pool_id = pool.id;
-        if pool_id <= last_pool_id {
+        if pool.id <= last_pool_id {
+            pb.inc(1);
             continue;
         }
         let token0 = pool.token0;
@@ -90,9 +95,9 @@ pub async fn load_tokens(
                                     }
                                 );
                             }
-                            Err(e) => { info!("Something wrong 0 {:?}", e) }
+                            Err(e) => { info!("Error getting token data {:?}", e) }
                         }
-                        Err(e) => { info!("Something wrong 1 {:?}", e) }
+                        Err(e) => { info!("Error getting token data {:?}", e) }
                     }
                 }
                 requests = Vec::new();
@@ -112,33 +117,24 @@ async fn get_token_data(
     token: Address,
 ) -> Result<Token> {
 
-    let interface = IERC20::new(token, provider);
+    let interface = IERC20::new(token, &provider);
 
-    let decimals = match interface.decimals().call().await {
-        Ok(r) => r,
-        Err(e) => { return Err(anyhow!("Decimals of token failed {:?}", e )) }
-    };
+    let multicall = provider
+        .multicall()
+        .add(interface.decimals())
+        .add(interface.name())
+        .add(interface.symbol());
 
-    let name = match interface.name().call().await {
+    let (decimals_result, name_result, symbol_result) = match multicall.aggregate().await {
         Ok(r) => r,
-        Err(e) => {
-            info!("Name of token {:?} failed {:?}", token, e);
-            String::from("PlaceHolderName")
-        }
-    };
-    let symbol = match interface.symbol().call().await{
-        Ok(r) => r,
-        Err(e) => {
-            info!("Symbol of token failed {:?}", e );
-            String::from("PlaceHolderSymbol")
-        }
+        Err(e) => { return Err(anyhow!("Multicall for token data failed {:?}", e )) }
     };
 
     Ok(Token {
         address: token,
-        name,
-        symbol,
-        decimals,
+        name: name_result,
+        symbol: symbol_result,
+        decimals: decimals_result,
     })
 }
 
@@ -148,8 +144,14 @@ pub fn load_tokens_from_file(
     let mut tokens = BTreeMap::new();
 
     if path.exists() {
-        let reader = std::fs::read_to_string(path)?;
-        let tokens_toml: TokensToml = toml::from_str(&reader)?;
+        let reader = match std::fs::read_to_string(path) {
+            Ok(r) => r,
+            Err(e) => { return Err(anyhow!("Failed to read tokens TOML file: {:?}", e)) }
+        };
+        let tokens_toml: TokensToml = match toml::from_str(&reader) {
+            Ok(t) => t,
+            Err(e) => { return Err(anyhow!("Failed to parse tokens TOML file: {:?}", e)) }
+        };
         for token in tokens_toml.token {
             tokens.insert(token.address, token);
         }
@@ -165,15 +167,24 @@ pub fn write_tokens_to_toml(
     let tokens_vec: Vec<Token> = tokens.values().cloned().collect();
     let tokens_toml = TokensToml { token: tokens_vec };
 
-    let toml_string = toml::to_string_pretty(&tokens_toml)?;
+    let toml_string = match toml::to_string_pretty(&tokens_toml) {
+        Ok(s) => s,
+        Err(e) => { return Err(anyhow!("Failed to serialize tokens to TOML: {:?}", e)) }
+    };
 
-    let mut file = OpenOptions::new()
+    let mut file = match OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(path)?;
+        .open(path) {
+            Ok(f) => f,
+            Err(e) => { return Err(anyhow!("Failed to open file for writing tokens: {:?}", e)) }
+        };
 
-    file.write_all(toml_string.as_bytes())?;
+    match file.write_all(toml_string.as_bytes()) {
+        Ok(_) => (),
+        Err(e) => { return Err(anyhow!("Failed to write tokens to file: {:?}", e)) }
+    };
 
     Ok(())
 }

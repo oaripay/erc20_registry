@@ -301,33 +301,15 @@ pub fn write_pools_to_toml(
     let pools_vec: Vec<Pool> = pools.values().cloned().collect();
     let pools_toml = PoolsToml { pool: pools_vec };
 
-    let toml_string = match toml::to_string_pretty(&pools_toml) {
-        Ok(s) => s,
-        Err(e) => {
-            info!("Error serializing pools to TOML: {:?}", e);
-            return Ok(());
-        }
-    };
+    let toml_string = toml::to_string_pretty(&pools_toml)?;
 
-    let mut file = match OpenOptions::new()
+    let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                info!("Error opening file for writing pools: {:?}", e);
-                return Ok(());
-            }
-        };
+        .open(path)?;
 
-    match file.write_all(toml_string.as_bytes()) {
-        Ok(_) => (),
-        Err(e) => {
-            info!("Error writing pools to file: {:?}", e);
-            return Ok(());
-        }
-    };
+    file.write_all(toml_string.as_bytes())?;
 
     Ok(())
 }
