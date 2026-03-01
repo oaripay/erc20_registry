@@ -57,7 +57,7 @@ pub async fn load_tokens(
         .progress_chars("##-"),
     );
 
-    let mut count = 1;
+    let mut count = 0;
     let mut requests = Vec::new();
 
     for (_, pool) in pools.into_iter() {
@@ -77,9 +77,9 @@ pub async fn load_tokens(
                         )
                     )
                 );
-                count += 1 ;
+                count += 1;
             }
-            if count == parallel {
+            if count >= parallel {
                 let results = futures::future::join_all(requests).await;
                 for result in results {
                     match result {
@@ -102,10 +102,35 @@ pub async fn load_tokens(
                 }
                 requests = Vec::new();
                 count = 0;
-                pb.inc(parallel);
+            }
+        }
+        pb.inc(1);
+    }
+
+    if !requests.is_empty() {
+        let results = futures::future::join_all(requests).await;
+        for result in results {
+            match result {
+                Ok(r) => match r {
+                    Ok(t) => {
+                        tokens.insert(
+                            t.address,
+                            Token {
+                                address: t.address,
+                                name: t.name,
+                                symbol: t.symbol,
+                                decimals: t.decimals
+                            }
+                        );
+                    }
+                    Err(e) => { info!("Error getting token data {:?}", e) }
+                }
+                Err(e) => { info!("Error getting token data {:?}", e) }
             }
         }
     }
+
+    pb.finish_with_message("Token loading complete");
 
     write_tokens_to_toml(&tokens, path)?;
 

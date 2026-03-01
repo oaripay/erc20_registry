@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     }
 
     let block_number = BlockId::from(provider.get_block_number().await.unwrap());
-    let from_block_number = 10000835;
+    let from_block_number = 10000835; // factory address block
     let chunks = 50000;
     let (pools, pool_id) = match load_pools(
         provider.clone(),
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
         Path::new("./data/tokens.toml"),
         &pools,
         parallel_tokens,
-        pool_id-100000,
+        pool_id,
     ).await {
         Ok(tokens) => tokens,
         Err(e) => {
